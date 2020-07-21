@@ -104,6 +104,22 @@ func retryAfter(v string) time.Duration {
 	return t.Sub(timeNow())
 }
 
+// responseChecker contains an isRetriableFn which reports if the request should be
+// retried based on the response code.
+type responseChecker struct {
+	// isRetriableFn reports whether a request can be retried based on the HTTP response status code.
+	// See Client.ShouldRetry doc comment.
+	isRetriableFn func(httpStatusCode int) bool
+}
+
+func (c *Client) responseChecker() *responseChecker {
+	f := c.ShouldRetry
+	if f == nil {
+		f = isRetriable
+	}
+	return &responseChecker{isRetriableFn: f}
+}
+
 // resOkay is a function that reports whether the provided response is okay.
 // It is expected to keep the response body unread.
 type resOkay func(*http.Response) bool
@@ -128,6 +144,7 @@ func wantStatus(codes ...int) resOkay {
 // until the context is done or a non-retriable error is received.
 func (c *Client) get(ctx context.Context, url string, ok resOkay) (*http.Response, error) {
 	retry := c.retryTimer()
+	resChecker := c.responseChecker()
 	for {
 		req, err := http.NewRequest("GET", url, nil)
 		if err != nil {
@@ -139,7 +156,7 @@ func (c *Client) get(ctx context.Context, url string, ok resOkay) (*http.Respons
 			return nil, err
 		case ok(res):
 			return res, nil
-		case isRetriable(res.StatusCode):
+		case resChecker.isRetriableFn(res.StatusCode):
 			retry.inc()
 			resErr := responseError(res)
 			res.Body.Close()
@@ -172,6 +189,7 @@ func (c *Client) postAsGet(ctx context.Context, url string, ok resOkay) (*http.R
 // It uses postNoRetry to make individual requests.
 func (c *Client) post(ctx context.Context, key crypto.Signer, url string, body interface{}, ok resOkay) (*http.Response, error) {
 	retry := c.retryTimer()
+	resChecker := c.responseChecker()
 	for {
 		res, req, err := c.postNoRetry(ctx, key, url, body)
 		if err != nil {
@@ -188,7 +206,7 @@ func (c *Client) post(ctx context.Context, key crypto.Signer, url string, body i
 		case isBadNonce(resErr):
 			// Consider any previously stored nonce values to be invalid.
 			c.clearNonces()
-		case !isRetriable(res.StatusCode):
+		case !resChecker.isRetriableFn(res.StatusCode):
 			return nil, resErr
 		}
 		retry.inc()
