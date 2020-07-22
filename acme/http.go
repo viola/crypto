@@ -22,9 +22,9 @@ import (
 // retries encapsulates common logic for retrying unsuccessful requests.
 // It is not safe for concurrent use.
 type retries struct {
-	// defaultShouldRetry reports whether a request can be retried based on the HTTP response status code.
+	// shouldRetry reports whether a request can be retried based on the HTTP response status code.
 	// See Client.ShouldRetry doc comment.
-	isRetriable func(resp *http.Response) bool
+	shouldRetry func(resp *http.Response) bool
 
 	// backoffFn provides backoff delay sequence for retries.
 	// See Client.RetryBackoff doc comment.
@@ -66,7 +66,7 @@ func (c *Client) retries() *retries {
 
 	return &retries{
 		backoffFn:   backoff,
-		isRetriable: shouldRetry,
+		shouldRetry: shouldRetry,
 	}
 }
 
@@ -152,7 +152,7 @@ func (c *Client) get(ctx context.Context, url string, ok resOkay) (*http.Respons
 			return nil, err
 		case ok(resp):
 			return resp, nil
-		case retry.isRetriable(resp):
+		case retry.shouldRetry(resp):
 			retry.inc()
 			resErr := responseError(resp)
 			resp.Body.Close()
@@ -201,7 +201,7 @@ func (c *Client) post(ctx context.Context, key crypto.Signer, url string, body i
 		case isBadNonce(resErr):
 			// Consider any previously stored nonce values to be invalid.
 			c.clearNonces()
-		case !retry.isRetriable(resp):
+		case !retry.shouldRetry(resp):
 			return nil, resErr
 		}
 		retry.inc()
