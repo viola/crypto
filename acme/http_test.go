@@ -212,73 +212,98 @@ func TestRetryBackoffArgs(t *testing.T) {
 	}
 }
 
-func TestResponseCheckerIsRetriableFn(t *testing.T) {
+func TestShouldRetry(t *testing.T) {
 	tt := []struct {
 		desc                   string
 		requestMethodType      string
-		shouldRetryFn          func(code int) bool
+		isRetriable            func(*http.Response) bool
 		responseHttpStatusCode int
 		expectedRetryCount     int
+		expectedErr            *Error
 	}{
 		{
 			desc:                   "retries post request that returns response code that is retriable in default isRetriable configuration",
 			requestMethodType:      http.MethodPost,
 			responseHttpStatusCode: http.StatusOK,
 			expectedRetryCount:     1,
+			expectedErr: &Error{
+				StatusCode: http.StatusOK,
+			},
 		},
 		{
 			desc:                   "does not retry post request that returns response code that is not retriable in default isRetriable configuration",
 			requestMethodType:      http.MethodPost,
 			responseHttpStatusCode: http.StatusUnprocessableEntity,
 			expectedRetryCount:     0,
+			expectedErr: &Error{
+				StatusCode: http.StatusUnprocessableEntity,
+			},
 		},
 		{
 			desc:                   "retries get request that returns response code that is retriable in default isRetriable configuration",
 			requestMethodType:      http.MethodGet,
 			responseHttpStatusCode: http.StatusTooManyRequests,
 			expectedRetryCount:     1,
+			expectedErr: &Error{
+				StatusCode: http.StatusTooManyRequests,
+			},
 		},
 		{
 			desc:                   "does not retry get request that returns response code that is not retriable in default isRetriable configuration",
 			requestMethodType:      http.MethodGet,
 			responseHttpStatusCode: http.StatusNotFound,
 			expectedRetryCount:     0,
+			expectedErr: &Error{
+				StatusCode: http.StatusNotFound,
+			},
 		},
 		{
 			desc:                   "retries post request that returns response code that is retriable in the client.ShouldRetry configuration",
 			requestMethodType:      http.MethodPost,
 			responseHttpStatusCode: http.StatusInternalServerError,
-			shouldRetryFn: func(httpStatusCode int) bool {
-				return httpStatusCode >= 500
+			isRetriable: func(resp *http.Response) bool {
+				return resp.StatusCode >= 500
 			},
 			expectedRetryCount: 1,
+			expectedErr: &Error{
+				StatusCode: http.StatusInternalServerError,
+			},
 		},
 		{
 			desc:                   "does not retry post request that returns response code that is not retriable in the client.ShouldRetry configuration",
 			requestMethodType:      http.MethodPost,
 			responseHttpStatusCode: http.StatusTooManyRequests,
-			shouldRetryFn: func(httpStatusCode int) bool {
+			isRetriable: func(resp *http.Response) bool {
 				return false
 			},
 			expectedRetryCount: 0,
+			expectedErr: &Error{
+				StatusCode: http.StatusTooManyRequests,
+			},
 		},
 		{
-			desc:                   "retries get request that returns response code that is retriable  in the client.ShouldRetry configuration",
+			desc:                   "retries get request that returns response code that is retriable in the client.ShouldRetry configuration",
 			requestMethodType:      http.MethodGet,
 			responseHttpStatusCode: http.StatusTooManyRequests,
-			shouldRetryFn: func(httpStatusCode int) bool {
-				return httpStatusCode == http.StatusTooManyRequests
+			isRetriable: func(resp *http.Response) bool {
+				return resp.StatusCode == http.StatusTooManyRequests
 			},
 			expectedRetryCount: 1,
+			expectedErr: &Error{
+				StatusCode: http.StatusTooManyRequests,
+			},
 		},
 		{
 			desc:                   "does not retry get request that returns response code that is not retriable in the client.ShouldRetry configuration",
 			requestMethodType:      http.MethodGet,
 			responseHttpStatusCode: http.StatusTooManyRequests,
-			shouldRetryFn: func(httpStatusCode int) bool {
-				return httpStatusCode <= 399 || httpStatusCode >= 500
+			isRetriable: func(resp *http.Response) bool {
+				return resp.StatusCode <= 399 || resp.StatusCode >= 500
 			},
 			expectedRetryCount: 0,
+			expectedErr: &Error{
+				StatusCode: http.StatusTooManyRequests,
+			},
 		},
 	}
 
@@ -290,6 +315,8 @@ func TestResponseCheckerIsRetriableFn(t *testing.T) {
 			defer ts.Close()
 
 			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
 			var retryNr int
 
 			client := &Client{
@@ -304,30 +331,22 @@ func TestResponseCheckerIsRetriableFn(t *testing.T) {
 				dir: &Directory{AuthzURL: ts.URL},
 			}
 
-			if test.shouldRetryFn != nil {
-				client.ShouldRetry = test.shouldRetryFn
+			if test.isRetriable != nil {
+				client.ShouldRetry = test.isRetriable
 			}
 
 			var err error
 			switch test.requestMethodType {
 			case http.MethodPost:
-				_, err = client.Authorize(ctx, "example.com")
+				_, err = client.post(ctx, nil, ts.URL, nil, wantStatus(http.StatusCreated))
 			case http.MethodGet:
-				_, err = client.GetAuthorization(ctx, ts.URL)
+				_, err = client.get(ctx, ts.URL, wantStatus(http.StatusOK))
 			default:
 			}
 
-			if err == nil {
-				t.Error("err is nil")
-			}
-
-			res, ok := err.(*Error)
-			if !ok {
-				t.Fatalf("err is %v (%T); want a non-nil *Error", err, err)
-			}
-
-			if res.StatusCode != test.responseHttpStatusCode {
-				t.Errorf("res.StatusCode = %d; want %d", res.StatusCode, test.responseHttpStatusCode)
+			acmeError, ok := err.(*Error)
+			if !ok || test.expectedErr.StatusCode != acmeError.StatusCode {
+				t.Fatalf("err is %v (%T); want a non-nil *acme.Error %v", err, err, test.expectedErr)
 			}
 
 			if retryNr != test.expectedRetryCount {

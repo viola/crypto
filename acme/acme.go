@@ -102,7 +102,7 @@ type Client struct {
 
 	// ShouldRetry reports whether a request can be retried based on the HTTP response status code.
 	// When ShouldRetry is nil, the default behavior will take precedence.
-	ShouldRetry func(httpStatusCode int) bool
+	ShouldRetry func(resp *http.Response) bool
 
 	// RetryBackoff computes the duration after which the nth retry of a failed request
 	// should occur. The value of n for the first call on failure is 1.
