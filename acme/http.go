@@ -19,10 +19,10 @@ import (
 	"time"
 )
 
-// retrier encapsulates common logic for retrying unsuccessful requests.
+// retries encapsulates common logic for retrying unsuccessful requests.
 // It is not safe for concurrent use.
-type retrier struct {
-	// isRetriable reports whether a request can be retried based on the HTTP response status code.
+type retries struct {
+	// defaultShouldRetry reports whether a request can be retried based on the HTTP response status code.
 	// See Client.ShouldRetry doc comment.
 	isRetriable func(resp *http.Response) bool
 
@@ -33,12 +33,12 @@ type retrier struct {
 	n int
 }
 
-func (r *retrier) inc() {
+func (r *retries) inc() {
 	r.n++
 }
 
 // backoff pauses the current goroutine as described in Client.RetryBackoff.
-func (r *retrier) backoff(ctx context.Context, req *http.Request, resp *http.Response) error {
+func (r *retries) backoff(ctx context.Context, req *http.Request, resp *http.Response) error {
 	d := r.backoffFn(r.n, req, resp)
 	if d <= 0 {
 		return fmt.Errorf("acme: no more retries for %s; tried %d time(s)", req.URL, r.n)
@@ -53,7 +53,7 @@ func (r *retrier) backoff(ctx context.Context, req *http.Request, resp *http.Res
 	}
 }
 
-func (c *Client) newRetrier() *retrier {
+func (c *Client) retries() *retries {
 	backoff := c.RetryBackoff
 	if backoff == nil {
 		backoff = defaultBackoff
@@ -61,10 +61,10 @@ func (c *Client) newRetrier() *retrier {
 
 	shouldRetry := c.ShouldRetry
 	if shouldRetry == nil {
-		shouldRetry = isRetriable
+		shouldRetry = defaultShouldRetry
 	}
 
-	return &retrier{
+	return &retries{
 		backoffFn:   backoff,
 		isRetriable: shouldRetry,
 	}
@@ -140,7 +140,7 @@ func wantStatus(codes ...int) resOkay {
 // get retries unsuccessful attempts according to c.RetryBackoff
 // until the context is done or a non-retriable error is received.
 func (c *Client) get(ctx context.Context, url string, ok resOkay) (*http.Response, error) {
-	retry := c.newRetrier()
+	retry := c.retries()
 	for {
 		req, err := http.NewRequest("GET", url, nil)
 		if err != nil {
@@ -184,7 +184,7 @@ func (c *Client) postAsGet(ctx context.Context, url string, ok resOkay) (*http.R
 // until the context is done or a non-retriable error is received.
 // It uses postNoRetry to make individual requests.
 func (c *Client) post(ctx context.Context, key crypto.Signer, url string, body interface{}, ok resOkay) (*http.Response, error) {
-	retry := c.newRetrier()
+	retry := c.retries()
 	for {
 		resp, req, err := c.postNoRetry(ctx, key, url, body)
 		if err != nil {
@@ -196,7 +196,7 @@ func (c *Client) post(ctx context.Context, key crypto.Signer, url string, body i
 		resErr := responseError(resp)
 		resp.Body.Close()
 		switch {
-		// Check for bad nonce before isRetriable because it may have been returned
+		// Check for bad nonce before defaultShouldRetry because it may have been returned
 		// with an unretriable response code such as 400 Bad Request.
 		case isBadNonce(resErr):
 			// Consider any previously stored nonce values to be invalid.
@@ -306,12 +306,12 @@ func isBadNonce(err error) bool {
 	return ok && strings.HasSuffix(strings.ToLower(ae.ProblemType), ":badnonce")
 }
 
-// isRetriable reports whether a request can be retried
+// defaultShouldRetry reports whether a request can be retried
 // based on the HTTP response status code.
 //
 // Note that a "bad nonce" error is returned with a non-retriable 400 Bad Request code.
 // Callers should parse the response and check with isBadNonce.
-func isRetriable(resp *http.Response) bool {
+func defaultShouldRetry(resp *http.Response) bool {
 	return resp.StatusCode <= 399 || resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests
 }
 
